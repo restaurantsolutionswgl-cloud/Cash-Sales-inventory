@@ -1,61 +1,64 @@
-# Restaurant Management System
+# Multi-Business CRM: v0.3 (Foundation + CRM core + employee access)
 
-React + Vite + Tailwind frontend, Supabase (PostgreSQL, Auth, RLS, Edge Functions) backend, deployed on Vercel.
-Cash book, sales, purchases, suppliers, inventory, staff and restaurant payments, reports (Excel/PDF/print).
+React + TypeScript + Vite + Tailwind + Supabase (Auth, Postgres, RLS) + Vercel.
+See `docs/ARCHITECTURE.md` (tables, permissions, plan) and `FEATURES.md` (done / partial / pending).
 
-## Step 1 – Extract
-Right-click `restaurant-management-system.zip` → Extract All. Open the folder; `package.json` must be directly inside.
+## 1. Supabase
+1. supabase.com → New project.
+2. **SQL Editor** → run `supabase/migrations/0001_foundation.sql`, then `0002_crm_core.sql`, then `0003_employee_access.sql`. (Or with the CLI: `supabase link --project-ref <ref>` then `supabase db push`.)
+3. **Authentication → URL Configuration:** set *Site URL* to your Vercel URL (use `http://localhost:5173` while developing) and add both to *Redirect URLs*.
+4. **Authentication → Providers → Email:** keep "Confirm email" ON (invitations rely on a verified email).
+5. **Project Settings → API:** copy *Project URL* and the *anon public* key. Never use the `service_role` key in this app.
 
-## Step 2 – Supabase
-1. Create a project at supabase.com.
-2. **SQL Editor** → run `supabase/migrations/001_schema.sql`, then `002_functions_rls.sql` (in this order).
-3. **Authentication → Providers**: keep Email enabled. For quick testing you may turn off "Confirm email".
-4. **Authentication → URL Configuration**: set Site URL to your Vercel URL (and `http://localhost:5173` for testing).
-5. **Database → Extensions**: enable `pg_cron` (for the weekly activity-log cleanup). If it was not enabled when you ran file 002, enable it and run:
-   `select cron.schedule('cleanup-activity-logs','30 20 * * *','select public.cleanup_activity_logs()');`
-6. **Edge Function** (used to add staff). Install the Supabase CLI, then in the project folder:
-   ```
-   supabase login
-   supabase link --project-ref YOUR_PROJECT_REF
-   supabase functions deploy admin-users
-   ```
-   The service-role key is provided to the function by Supabase itself. It is never in the React app.
-7. **Project Settings → API**: copy the Project URL and the `anon` / publishable key.
-
-## Step 3 – Environment
-Copy `.env.example` to `.env.local`:
-```
-VITE_SUPABASE_URL=your_project_url
-VITE_SUPABASE_ANON_KEY=your_anon_key
-```
-
-## Step 4 – Run locally
-```
+## 2. Run locally
+```bash
 npm install
-npm run dev
+cp .env.example .env      # fill in the two values
+npm run dev               # http://localhost:5173
+npm test                  # unit tests
+npm run build             # type-check + production build
 ```
-Open http://localhost:5173. On the sign-in page click **First-time setup** to create the restaurant and the Owner account (works only once).
+First user: **Create account**, confirm email, sign in, then **Businesses → New business** (you become its owner).
+Optional dev data: edit the email in `supabase/seed.sql` and run it in the SQL editor (Hangout Corner, ECS Technologies, Other Business + sample tasks).
 
-## Step 5 – GitHub
-Create a repository and upload the whole folder (not `node_modules`, not `.env.local`; `.gitignore` already excludes them).
-`package.json`, `index.html`, `src`, `public`, `supabase`, `vercel.json` must be visible at the repo root.
+## 3. Inviting people (email)
+Employees → Invite someone. Invitees join automatically when they sign in with that exact email.
+To send the email, deploy the Edge Function once (CLI installed and project linked):
+```bash
+supabase functions deploy invite-user
+supabase secrets set SITE_URL=https://your-app.vercel.app
+```
+Until then the page shows a copy-link fallback. Existing accounts are not re-invited; they just sign in.
 
-## Step 6 – Vercel
-Import the GitHub repo. Framework: Vite. Build command `npm run build`, output `dist`.
-Add `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` under Environment Variables, then Deploy.
-`vercel.json` already rewrites all routes to `index.html`.
+## 3b. Automation (overdue + follow-ups)
+Run `supabase/cron.sql` once in the SQL editor. It schedules `run_automation()` every 30 minutes (idempotent).
+Test it any time with `select public.run_automation();`.
 
-## Step 7 – Verify
-Owner login → add a Manager and an Employee (Employee Management) → employee signs in from the invitation email → check the employee sees only Dashboard/Inventory/Stock/Activity/Reports (inventory only) → add stock, use stock → open Inventory Activity Log → add a sale, purchase (try Credit/Udhaar), pay a supplier → Reports → download Excel/PDF.
+## 4. GitHub Desktop
+1. Unzip the project. GitHub Desktop → **File → Add local repository** → choose the folder → "create a repository" → Create.
+2. Commit ("Initial commit") → **Publish repository** (keep it private).
+CLI alternative: `git init && git add . && git commit -m "Initial commit" && git branch -M main && git remote add origin <url> && git push -u origin main`.
 
-## How the rules are enforced (in the database, not the browser)
-- Money tables (sales, purchases, payments, cash ledger, reports) are readable only by Owner/Manager through Row Level Security.
-- Stock quantity can only change through the `stock_move` function (atomic, locks the row, blocks negatives, is idempotent, records who/when/before/after). A trigger blocks direct quantity edits.
-- `stock_transactions` (permanent) and `inventory_activity_logs` (7-day view) are separate. The nightly cleanup touches only the latter. Deletes on the permanent stock and cash ledgers are blocked.
-- Credit purchases create a payable and do not touch cash. Supplier payments are separate ledger entries. Platform sales are not cash until a payout is recorded, and payouts are not counted as sales.
-- Removing a sale/purchase/payment is a soft delete; its cash entries are marked reversed. Every change is written to Audit Logs.
-- Users cannot change their own role or permissions; role changes go through server-side functions.
+## 5. Vercel
+1. vercel.com → Add New → Project → import the GitHub repo (Framework: Vite is auto-detected).
+2. Environment Variables: `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`.
+3. Deploy. Then add the Vercel URL to Supabase *Site URL / Redirect URLs* (step 1.3). `vercel.json` handles SPA routing.
 
-## Notes
-- Employee permissions you can assign are inventory-related (view, add, use, activity, reports). Money pages are Owner/Manager only by design.
-- Employees see their own inventory activity unless given "View all inventory activity".
+## 6. Verify (do this before relying on it)
+- `supabase/tests/rls_test.sql` and `rls_test_crm.sql`: run on a **dev** project (psql or SQL editor). They create fake users, check cross-business and role boundaries, print `RLS tests passed` / `RLS CRM tests passed`, and roll back.
+- Manual: two accounts, two businesses; confirm neither sees the other's data; employee cannot edit task title/assignee.
+- `npm run build` must succeed.
+
+## 7. Backup and recovery
+- Supabase Dashboard → Database → Backups (daily backups on paid plans; enable Point-in-Time Recovery for production).
+- Manual dump: `pg_dump "<connection string from Settings → Database>" -Fc -f backup_$(date +%F).dump`
+- Restore into a fresh project: `pg_restore --no-owner -d "<new connection string>" backup.dump`. Keep dumps outside the repo (they contain data).
+
+## Maintenance notes
+- Every new table needs `enable row level security`, explicit policies, and explicit `grant`s (migration 0001 revokes default grants; new tables don't inherit that).
+- Supabase returns at most 1000 rows per request; list screens paginate and CSV import/export page through results.
+- Add new migrations as `supabase/migrations/000N_name.sql`; never edit applied ones.
+- Archived businesses are hidden but not write-locked at the DB level yet.
+
+## Add member directly (no sign-up needed)
+Employees → "Add member directly". One-time setup: Supabase dashboard → **Edge Functions → Deploy a new function → Via Editor**, name it `add-member`, paste `supabase/functions/add-member/index.ts`, Deploy. The same steps work for `invite-user` (email invites; also set the `SITE_URL` secret).
